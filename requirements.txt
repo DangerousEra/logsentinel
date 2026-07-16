@@ -1,0 +1,3 @@
+# LogSentinel has zero runtime dependencies (stdlib only).
+# This file lists dev/test dependencies.
+pytest>=7.0
