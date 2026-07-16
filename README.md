@@ -28,7 +28,7 @@ Most "log analyzer" tutorials just `grep` for a keyword. LogSentinel instead:
 ## Installation
 
 ```bash
-git clone https://github.com/<your-username>/logsentinel.git
+git clone https://github.com/dangerousera/logsentinel.git
 cd logsentinel
 pip install -e .
 ```
