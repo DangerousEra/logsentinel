@@ -1,67 +1,63 @@
 # LogSentinel
 
-A lightweight, dependency-free log analysis and threat-detection toolkit written in Python. Point it at an SSH auth log or a web server access log and it flags brute-force attempts, injection payloads, known scanner tools, and endpoint-recon bursts.
+A Python CLI I built to dig through server logs and flag suspicious activity — SSH brute-force attempts on auth logs, and attack payloads (SQLi, XSS, scanner traffic) on web access logs.
 
-Built as a companion to [NetScan](#) (a TCP port scanner) — where NetScan looks outward at open ports, LogSentinel looks inward at what already hit your logs.
+I built this as a follow-up to [NetScan](#), my TCP port scanner. NetScan looks outward — what ports are open, what's exposed. LogSentinel looks inward — what's already showing up in the logs after the fact. Felt like the natural next piece for a small blue-team-style toolkit.
 
-## Why
+## Why I built it this way
 
-Most "log analyzer" tutorials just `grep` for a keyword. LogSentinel instead:
-- Parses logs into typed, structured records (`AuthEvent`, `WebEvent`) instead of working with raw strings
-- Uses a real sliding-time-window algorithm for brute-force detection, not just a raw count
-- Separates parsing, detection, and reporting into independent, testable modules
-- Ships with unit tests and sample logs so it runs out of the box — no need to find real logs to try it
+I didn't want this to just be a script that `grep`s for "Failed password" and calls it a day — I wanted something I could actually explain properly in an interview. So:
 
-## Features
+- Logs get parsed into proper structured records (`AuthEvent`, `WebEvent`) instead of passing raw strings around everywhere
+- Brute-force detection uses an actual sliding time window, not just a flat count — an IP with 5 failed logins spread across a week won't get flagged, but a fast burst will, even if there's unrelated noise before/after it
+- Parsing, detection, and reporting are separate modules, so adding a new log type or detection rule doesn't mean touching everything else
+- It comes with sample logs and tests, so you can run it and see it work without hunting down real server logs first
 
-**Auth log analysis** (`--type auth`)
-- Parses SSH login attempts from `/var/log/auth.log`-style files
-- Detects brute-force bursts: N+ failed logins from one IP within a rolling time window
-- Flags "compromise suspected" when a burst is followed by a successful login from the same IP
+## What it does
 
-**Web log analysis** (`--type web`)
-- Parses Combined Log Format (Apache/Nginx default)
-- Detects SQL injection, XSS, path traversal, and command injection payloads in request paths
-- Fingerprints known scanning tools (sqlmap, nikto, nmap, wpscan, etc.) by user agent
-- Flags recon/endpoint brute-forcing: one IP generating a high volume of 4xx responses
+**Auth logs** (`--type auth`) — reads SSH login attempts from `/var/log/auth.log`-style files, flags IPs with a burst of failed logins in a short window, and calls out "compromise suspected" if a burst is followed by a successful login from that same IP.
 
-## Installation
+**Web logs** (`--type web`) — reads Apache/Nginx Combined Log Format, and checks for:
+- SQL injection / XSS / path traversal / command injection patterns in request paths
+- known scanner tools showing up in the user-agent (sqlmap, nikto, nmap, wpscan, etc.)
+- one IP hammering a bunch of endpoints and getting mostly 404s (recon behavior)
+
+## Install
 
 ```bash
-git clone https://github.com/<your-username>/logsentinel.git
+git clone https://github.com/DangerousEra/logsentinel.git
 cd logsentinel
 pip install -e .
 ```
 
-No external runtime dependencies — everything runs on the Python standard library.
+No external dependencies — it's all standard library.
 
 ## Usage
 
 ```bash
-# Analyze an SSH auth log for brute-force attempts
+# check an SSH auth log
 logsentinel analyze --type auth --file /var/log/auth.log
 
-# Analyze a web access log for attack payloads and scanners
+# check a web access log
 logsentinel analyze --type web --file access.log
 
-# Tune detection sensitivity
+# adjust how sensitive it is
 logsentinel analyze --type auth --file auth.log --threshold 3
 
-# Machine-readable output for piping into other tools
+# JSON output if you want to pipe it somewhere else
 logsentinel analyze --type web --file access.log --json
 ```
 
-Try it immediately on the bundled sample logs:
+If you just want to see it work first, it ships with sample logs:
 
 ```bash
 logsentinel analyze --type auth --file tests/sample_logs/auth.log
 logsentinel analyze --type web --file tests/sample_logs/access.log --threshold 5
 ```
 
-Exit code is `1` if any alerts were found and `0` otherwise, so it drops straight into a CI pipeline or cron job.
+It exits with `1` if it found anything and `0` if the log's clean, so it can slot into a cron job or a CI check.
 
-## Example output
-
+Sample output:
 ```
 === SSH Brute-Force Analysis ===
 1 alert(s) found
@@ -69,39 +65,35 @@ Exit code is `1` if any alerts were found and `0` otherwise, so it drops straigh
 [COMPROMISE SUSPECTED] 198.51.100.23: 5 failed attempts (admin, root, test) between 2026-07-14 03:20:01 and 2026-07-14 03:20:20
 ```
 
-## Architecture
+## How it's structured
 
 ```
 logsentinel/
-├── parsers/          # Raw log lines -> structured dataclasses
-│   ├── auth_log.py   # AuthEvent (SSH login attempts)
-│   └── web_log.py    # WebEvent (Combined Log Format requests)
-├── detectors/         # Structured events -> alerts
-│   ├── brute_force.py # Sliding-window failed-login detection
-│   └── web_attacks.py # Payload signatures, scanner UAs, recon bursts
-├── report.py          # Alerts -> text or JSON output
-└── cli.py             # argparse entry point
+├── parsers/           # raw log lines -> structured objects
+│   ├── auth_log.py
+│   └── web_log.py
+├── detectors/          # structured events -> alerts
+│   ├── brute_force.py
+│   └── web_attacks.py
+├── report.py           # alerts -> text or JSON
+└── cli.py
 ```
 
-Each layer only depends on the one below it, so you can add a new log format (e.g. firewall logs) by writing a new parser, or a new detection rule by writing a new detector — without touching the rest of the codebase.
+Each piece only depends on the one below it. Want to add support for firewall logs? Write a new parser. Want a new detection rule? Write a new detector. Nothing else needs to change.
 
-### How brute-force detection works
-
-Rather than a flat "count failed logins per IP", it's a real sliding time window: failed attempts are sorted by timestamp, and a two-pointer window checks whether any `threshold`-sized cluster fits inside `window_minutes`. This avoids two failure modes of a naive counter — it won't flag an IP with 5 failed logins spread evenly across a week, and it will catch a fast burst even if the IP has other unrelated failed logins scattered before or after it.
-
-## Testing
+## Running the tests
 
 ```bash
 pip install -r requirements.txt
 pytest tests/ -v
 ```
 
-## Roadmap / ideas for extension
+## Things I'd add if I keep working on this
 
-- [ ] Firewall log parser (iptables/ufw)
-- [ ] GeoIP lookup for flagged IPs
-- [ ] Slack/email alerting on detection
-- [ ] Real-time `tail -f`-style streaming mode
+- Firewall log support (iptables/ufw)
+- GeoIP lookups on flagged IPs
+- Alerting to Slack/email instead of just console output
+- A `tail -f`-style live mode instead of only static files
 
 ## License
 
